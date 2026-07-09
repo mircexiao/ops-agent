@@ -33,6 +33,15 @@ func (c *PromptComposer) Build() schema.Message {
 	4. 无论何时你需要写代码或创建文件，都要直接使用 write_file 工具。
 	5. 遇到工具执行报错时，仔细阅读 stderr，尝试自己修正命令并重试。
 	6. 始终用中文回复，以便传达你的进展和想法。
+	# 工具调用格式规范 (CRITICAL)
+	你必须严格按照以下 JSON 格式调用工具：
+	{"name": "工具名称", "arguments": {"参数名": "参数值"}}
+	例如：
+	{"name": "bash", "arguments": {"command": "ls -la"}}
+	{"name": "write_file", "arguments": {"path": "test.txt", "content": "hello"}}
+	{"name": "read_file", "arguments": {"path": "test.txt"}}
+	{"name": "edit_file", "arguments": {"path": "test.txt", "old_text": "hello", "new_text": "world"}}
+	绝对禁止使用任何其他格式。
 	`)
 	if c.planMode {
 		promptBuilder.WriteString(`

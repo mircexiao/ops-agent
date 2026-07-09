@@ -55,7 +55,7 @@ func main() {
 	registry.Register(writeFileTool)
 	registry.Register(bashTool)
 	registry.Register(editFileTool)
-	eng := engine.NewAgentEngine(trackerProvider, registry, true, true)
+	eng := engine.NewAgentEngine(trackerProvider, registry, false, false, true)
 	ctx, rootSpan := observatibility.StartSpan(context.Background(), "CLI.TaskRun")
 	rootSpan.AddAttribute("prompt", *promptPtr)
 	defer func() {

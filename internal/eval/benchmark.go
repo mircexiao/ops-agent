@@ -92,7 +92,7 @@ func (b *BenchmarkRunner) runSingleTest(ctx context.Context, tc TestCase) TestRe
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
-	eng := engine.NewAgentEngine(trackerProvider, registry, false, false)
+	eng := engine.NewAgentEngine(trackerProvider, registry, false, false, false)
 	session.Append(
 		schema.Message{
 			Role:    schema.RoleUser,

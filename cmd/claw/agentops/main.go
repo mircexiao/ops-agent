@@ -55,7 +55,7 @@ func main() {
 	log.Print("MiddleWare已挂载")
 	engineFactory := func(session *ctxpkg.Session) *engine.AgentEngine {
 		trackedProvider := observatibility.NewCostTracker(llmProvider, modelName, session)
-		return engine.NewAgentEngine(trackedProvider, registry, false, false)
+		return engine.NewAgentEngine(trackedProvider, registry, false, false, false)
 	}
 	bot := feishu.NewFeishuBotFactory(engineFactory, workDir)
 	err := bot.StartLongConnection()

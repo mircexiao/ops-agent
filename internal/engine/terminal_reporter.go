@@ -29,3 +29,7 @@ func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName string, re
 func (r *TerminalReporter) OnMessage(ctx context.Context, content string) {
 	fmt.Println(content)
 }
+
+func (r *TerminalReporter) OnStreamDelta(ctx context.Context, delta string) {
+	fmt.Print(delta)
+}

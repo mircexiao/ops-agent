@@ -120,3 +120,7 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	}
 	return returnMsg, nil
 }
+
+func (p *ClaudeProvider) GenerateStream(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.EventType, error) {
+	return nil, nil
+}

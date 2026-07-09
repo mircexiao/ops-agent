@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	ctxpkg "github.com/mircexiao/go-tiny-claw/internal/context"
@@ -19,18 +21,20 @@ type AgentEngine struct {
 	WorkDir         string
 	EnableThinking  bool
 	PlanMode        bool
+	Stream          bool
 	composer        *ctxpkg.PromptComposer
 	compactor       *ctxpkg.Compactor
 	recoveryManager *ctxpkg.RecoveryManager
 	injector        *ReminderInjector
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool, stream bool) *AgentEngine {
 	return &AgentEngine{
 		provider:        p,
 		registry:        r,
 		EnableThinking:  enableThinking,
 		PlanMode:        planMode,
+		Stream:          stream,
 		compactor:       ctxpkg.NewCompactor(3000, 20),
 		recoveryManager: ctxpkg.NewRecoveryManager(),
 		injector:        NewReminderInjector(),
@@ -49,50 +53,108 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, report R
 	turnCount := 0
 	for {
 		turnCount++
+		// 记录每次循环
 		turnCtx, turnSpan := observatibility.StartSpan(ctx, fmt.Sprintf("Turn %d", turnCount))
 		defer turnSpan.EndSpan()
 		log.Printf("===============================[Turn %d]=========================开始", turnCount)
+		// 获取可用工具
 		avaliableTools := e.registry.GetAvailableTools()
 		log.Printf("[Engine]可用工具数量: %d", len(avaliableTools))
+		// 最近对话记录
 		workingMemory := session.GetWorkingMemory(20)
+		// 组装要发送的消息
 		var contextHistory []schema.Message
 		contextHistory = append(contextHistory, systemMessage)
 		contextHistory = append(contextHistory, workingMemory...)
 		compactedContext := e.compactor.Compact(contextHistory)
+		// 记录发送的消息数量
 		turnSpan.AddAttribute("context_message_count", len(compactedContext))
 		log.Printf("[Engine]正在执行，请稍等(Resoning)...")
+		// 开启慢思考
 		if e.EnableThinking {
 			_, thinkSpan := observatibility.StartSpan(turnCtx, "LLM.Thinking")
 			defer thinkSpan.EndSpan()
 			log.Printf("[Engine]正在慢思考(Thinking)...")
 			thinkRes, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
-				log.Printf("[Engine]思考失败")
+				log.Printf("[Engine]思考失败:%v", err)
+				continue
 			}
-			if thinkRes.Content != "" {
+			if thinkRes != nil && thinkRes.Content != "" {
 				fmt.Printf("[Engine]思考结果:%s\n", thinkRes.Content)
-				// session.Append(*thinkRes)
 				compactedContext = append(compactedContext, *thinkRes)
-
 			}
 		}
+		// 记录执行
 		_, actSpan := observatibility.StartSpan(turnCtx, "LLM.Action")
-		response, err := e.provider.Generate(ctx, compactedContext, avaliableTools)
-		actSpan.EndSpan()
-		if err != nil {
-			log.Printf("[Engine]执行失败:%v", err)
-			return err
-		}
-		session.Append(*response)
-		// compactedContext = append(compactedContext, *response)
-		if response.Content != "" && report != nil {
-			report.OnMessage(ctx, response.Content)
+		var response *schema.Message
+		var err error
+		// 非流式输出
+		if e.Stream == false {
+			response, err = e.provider.Generate(ctx, compactedContext, avaliableTools)
+
+			actSpan.EndSpan()
+			if err != nil {
+				log.Printf("[Engine]执行失败:%v", err)
+				return err
+			}
+			session.Append(*response)
+			// compactedContext = append(compactedContext, *response)
+			if response.Content != "" && report != nil {
+				report.OnMessage(ctx, response.Content)
+			}
+
+		} else {
+			var stream <-chan schema.StreamEvent
+			stream, err = e.provider.GenerateStream(ctx, compactedContext, avaliableTools)
+			if err != nil {
+				return err
+			}
+			var fullContent strings.Builder
+			var toolCalls []schema.ToolCall
+			toolArgs := make(map[string]string)
+			for event := range stream {
+				switch event.Type {
+				case schema.EventTextDelta:
+					fullContent.WriteString(event.Text)
+					report.OnStreamDelta(ctx, event.Text)
+				case schema.EventToolCallStart:
+					toolCalls = append(toolCalls, schema.ToolCall{
+						ID:   event.ToolCallID,
+						Name: event.ToolName,
+					})
+				case schema.EventToolCallDelta:
+					toolArgs[event.ToolCallID] += event.ToolArgsDelta
+				case schema.EventError:
+					return event.Error
+				case schema.EventDone:
+					for i := range toolCalls {
+						if args, ok := toolArgs[toolCalls[i].ID]; ok {
+							toolCalls[i].Arguments = json.RawMessage(args)
+						}
+					}
+				}
+			}
+			content := fullContent.String()
+			if len(toolCalls) == 0 && len(content) > 0 {
+				toolCalls = parseToolCallsFromText(content)
+				if len(toolCalls) > 0 {
+					content = ""
+				}
+			}
+			response = &schema.Message{
+				Role:      schema.RoleAssistant,
+				Content:   content,
+				ToolCalls: toolCalls,
+			}
+			session.Append(*response)
 		}
 		if len(response.ToolCalls) == 0 {
 			actSpan.EndSpan()
 			log.Print("[Engine]任务已完成，退出循环...\n")
 			break
 		}
+		// 执行工具调用
 		observationMsgs := make([]schema.Message, len(response.ToolCalls))
 		var lastToolCall schema.ToolCall
 		var lastToolResult schema.ToolResult
@@ -137,6 +199,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, report R
 		wg.Wait()
 		session.Append(observationMsgs...)
 		turnSpan.EndSpan()
+		// 判断需要介入
 		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
 		if reminderMsg != nil {
 			session.Append(*reminderMsg)
@@ -210,4 +273,22 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 		wg.Wait()
 		contextHistory = append(contextHistory, observationMsgs...)
 	}
+}
+
+func parseToolCallsFromText(content string) []schema.ToolCall {
+	var toolCalls []schema.ToolCall
+	var toolCall struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(content), &toolCall); err == nil && toolCall.Name != "" {
+		argsBytes, _ := json.Marshal(toolCall.Arguments)
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:        "auto_" + toolCall.Name,
+			Name:      toolCall.Name,
+			Arguments: argsBytes,
+		})
+		return toolCalls
+	}
+	return nil
 }

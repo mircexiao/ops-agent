@@ -8,4 +8,5 @@ import (
 
 type LLMProvider interface {
 	Generate(ctx context.Context, messages []schema.Message, avaliableTiils []schema.ToolDefinition) (*schema.Message, error)
+	GenerateStream(ctx context.Context, messages []schema.Message, avaliableTiils []schema.ToolDefinition) (<-chan schema.StreamEvent, error)
 }

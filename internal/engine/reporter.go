@@ -9,4 +9,5 @@ type Reporter interface {
 	OnToolCall(ctx context.Context, toolName string, args string)
 	OnToolResult(ctx context.Context, toolName string, result string, isError bool)
 	OnMessage(ctx context.Context, content string)
+	OnStreamDelta(ctx context.Context, delta string)
 }

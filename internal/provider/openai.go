@@ -27,7 +27,7 @@ func NewOpenAIProvider(model string) *OpenAIProvider {
 		model:  model,
 	}
 }
-func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *OpenAIProvider) converMessages(msgs []schema.Message) []openai.ChatCompletionMessageParamUnion {
 	var openaiMsgs []openai.ChatCompletionMessageParamUnion
 	for _, msg := range msgs {
 		switch msg.Role {
@@ -67,8 +67,12 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			})
 		}
 	}
+	return openaiMsgs
+}
+
+func (p *OpenAIProvider) convertTools(tools []schema.ToolDefinition) []openai.ChatCompletionToolUnionParam {
 	var openaiTools []openai.ChatCompletionToolUnionParam
-	for _, toolDef := range availableTools {
+	for _, toolDef := range tools {
 		var params shared.FunctionParameters
 		if m, ok := toolDef.InputSchema.(map[string]interface{}); ok {
 			params = shared.FunctionParameters(m)
@@ -84,6 +88,11 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			},
 		))
 	}
+	return openaiTools
+}
+func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	var openaiMsgs []openai.ChatCompletionMessageParamUnion = p.converMessages(msgs)
+	var openaiTools []openai.ChatCompletionToolUnionParam = p.convertTools(availableTools)
 	params := openai.ChatCompletionNewParams{
 		Model:    p.model,
 		Messages: openaiMsgs,
@@ -119,4 +128,87 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		}
 	}
 	return resultMsg, nil
+}
+
+func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamEvent, error) {
+	var openaiMsgs []openai.ChatCompletionMessageParamUnion = p.converMessages(msgs)
+	var openaiTools []openai.ChatCompletionToolUnionParam = p.convertTools(availableTools)
+	params := openai.ChatCompletionNewParams{
+		Model:    p.model,
+		Messages: openaiMsgs,
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
+	}
+	if len(openaiTools) > 0 {
+		params.Tools = openaiTools
+	}
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+	ch := make(chan schema.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		toolCallArgs := make(map[int]string)
+		toolCallIDs := make(map[int]string)
+		var usage *schema.Usage
+		for stream.Next() {
+			chunk := stream.Current()
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+			delta := chunk.Choices[0].Delta
+			if delta.Content != "" {
+				ch <- schema.StreamEvent{
+					Type: schema.EventTextDelta,
+					Text: delta.Content,
+				}
+			}
+			for _, tc := range delta.ToolCalls {
+				idx := int(tc.Index)
+				if tc.ID != "" {
+					toolCallIDs[idx] = tc.ID
+					ch <- schema.StreamEvent{
+						Type:       schema.EventToolCallStart,
+						ToolCallID: tc.ID,
+						ToolName:   tc.Function.Name,
+					}
+				}
+				if tc.Function.Arguments != "" {
+					toolCallArgs[idx] += tc.Function.Arguments
+					callID := tc.ID
+					if callID == "" {
+						callID = toolCallIDs[idx]
+					}
+					ch <- schema.StreamEvent{
+						Type:          schema.EventToolCallDelta,
+						ToolCallID:    callID,
+						ToolArgsDelta: tc.Function.Arguments,
+					}
+				}
+			}
+			if chunk.Usage.TotalTokens > 0 {
+				usage = &schema.Usage{
+					PromptTokens:     int(chunk.Usage.PromptTokens),
+					CompletionTokens: int(chunk.Usage.CompletionTokens),
+				}
+			}
+		}
+		if usage != nil {
+			ch <- schema.StreamEvent{
+				Type:  schema.EventUsage,
+				Usage: usage,
+				Error: nil,
+			}
+		}
+		if err := stream.Err(); err != nil {
+			ch <- schema.StreamEvent{
+				Type:  schema.EventError,
+				Error: err,
+			}
+			return
+		}
+		ch <- schema.StreamEvent{
+			Type: schema.EventDone,
+		}
+	}()
+	return ch, nil
 }

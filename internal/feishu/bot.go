@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -172,6 +174,13 @@ func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {
 type FeishuReporter struct {
 	client *lark.Client
 	chatId string
+
+	// 流式输出相关
+	streamMu       sync.Mutex
+	streamMsgId    string          // 飞书消息 ID，用于 Patch
+	streamContent  strings.Builder // 累积的完整文本
+	streamDirty    bool            // 是否有未刷新的内容
+	streamLastPatch time.Time      // 上次 Patch 时间，用于限流
 }
 
 func (r *FeishuReporter) sendMessage(text string) {
@@ -210,6 +219,51 @@ func (r *FeishuReporter) sendCardMessage(cardContent string) {
 	_, _ = r.client.Im.Message.Create(context.Background(), msgReq)
 }
 
+// createStreamMessage 发送首条流式消息，返回 messageId
+func (r *FeishuReporter) createStreamMessage(text string) string {
+	textContent := map[string]string{"text": text}
+	contentBytes, _ := json.Marshal(textContent)
+	contentStr := string(contentBytes)
+
+	msgReq := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType("chat_id").
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(r.chatId).
+			MsgType(larkim.MsgTypeText).
+			Content(contentStr).
+			Build()).
+		Build()
+
+	resp, err := r.client.Im.Message.Create(context.Background(), msgReq)
+	if err != nil || !resp.Success() {
+		log.Printf("[Feishu] 创建流式消息失败: %v", err)
+		return ""
+	}
+	return *resp.Data.MessageId
+}
+
+// patchStreamMessage 更新已发送消息的内容
+func (r *FeishuReporter) patchStreamMessage(text string) {
+	if r.streamMsgId == "" {
+		return
+	}
+	textContent := map[string]string{"text": text}
+	contentBytes, _ := json.Marshal(textContent)
+	contentStr := string(contentBytes)
+
+	patchReq := larkim.NewPatchMessageReqBuilder().
+		MessageId(r.streamMsgId).
+		Body(larkim.NewPatchMessageReqBodyBuilder().
+			Content(contentStr).
+			Build()).
+		Build()
+
+	_, err := r.client.Im.Message.Patch(context.Background(), patchReq)
+	if err != nil {
+		log.Printf("[Feishu] Patch 消息失败: %v", err)
+	}
+}
+
 func (r *FeishuReporter) OnToolCall(ctx context.Context, toolName string, args string) {
 	r.sendMessage(fmt.Sprintf("🛠️ **正在执行工具**：`%s`\n参数：`%s`", toolName, args))
 }
@@ -223,7 +277,45 @@ func (r *FeishuReporter) OnToolResult(ctx context.Context, toolName string, resu
 }
 
 func (r *FeishuReporter) OnMessage(ctx context.Context, content string) {
+	// 流式模式：content 为空表示流结束，做最终 Patch
+	if content == "" && r.streamMsgId != "" {
+		r.streamMu.Lock()
+		defer r.streamMu.Unlock()
+		// 最终 Patch：去掉光标，发送完整内容
+		r.patchStreamMessage(r.streamContent.String())
+		r.streamMsgId = ""
+		r.streamContent.Reset()
+		r.streamDirty = false
+		return
+	}
+	// 非流式模式：直接发新消息
 	r.sendMessage(content)
+}
+
+func (r *FeishuReporter) OnStreamDelta(ctx context.Context, delta string) {
+	r.streamMu.Lock()
+	defer r.streamMu.Unlock()
+
+	// 第一次收到 delta：先发一条消息，拿到 messageId
+	if r.streamMsgId == "" {
+		r.streamContent.WriteString(delta)
+		msgId := r.createStreamMessage(r.streamContent.String() + " ▌")
+		r.streamMsgId = msgId
+		r.streamLastPatch = time.Now()
+		r.streamDirty = false
+		return
+	}
+
+	// 后续 delta：累积到 buffer
+	r.streamContent.WriteString(delta)
+	r.streamDirty = true
+
+	// 限流：距上次 Patch 超过 500ms 才刷新
+	if time.Since(r.streamLastPatch) >= 500*time.Millisecond {
+		r.patchStreamMessage(r.streamContent.String() + " ▌")
+		r.streamLastPatch = time.Now()
+		r.streamDirty = false
+	}
 }
 
 var _ engine.Reporter = (*FeishuReporter)(nil)

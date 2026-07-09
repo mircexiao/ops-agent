@@ -42,3 +42,24 @@ type ToolDefinition struct {
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"input_schema"`
 }
+
+type EventType string
+
+const (
+	EventTextDelta     EventType = "text_delta"
+	EventToolCallStart EventType = "tool_call_start"
+	EventToolCallDelta EventType = "tool_call_delta"
+	EventDone          EventType = "done"
+	EventUsage         EventType = "usage"
+	EventError         EventType = "error"
+)
+
+type StreamEvent struct {
+	Type          EventType `json:"type"`
+	Text          string    `json:"text,omitempty"`
+	ToolCallID    string    `json:"tool_call_id,omitempty"`
+	ToolName      string    `json:"tool_name,omitempty"`
+	ToolArgsDelta string    `json:"tool_args_delta,omitempty"`
+	Usage         *Usage    `json:"usage"`
+	Error         error     `json:"-"`
+}

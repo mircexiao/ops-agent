@@ -1,0 +1,8 @@
+# 环境变量
+.env
+
+# Trace 文件
+.claw/traces/
+
+# Go 相关
+*.exe
