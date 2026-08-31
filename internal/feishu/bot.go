@@ -176,11 +176,11 @@ type FeishuReporter struct {
 	chatId string
 
 	// 流式输出相关
-	streamMu       sync.Mutex
-	streamMsgId    string          // 飞书消息 ID，用于 Patch
-	streamContent  strings.Builder // 累积的完整文本
-	streamDirty    bool            // 是否有未刷新的内容
-	streamLastPatch time.Time      // 上次 Patch 时间，用于限流
+	streamMu        sync.Mutex
+	streamMsgId     string          // 飞书消息 ID，用于 Patch
+	streamContent   strings.Builder // 累积的完整文本
+	streamDirty     bool            // 是否有未刷新的内容
+	streamLastPatch time.Time       // 上次 Patch 时间，用于限流
 }
 
 func (r *FeishuReporter) sendMessage(text string) {

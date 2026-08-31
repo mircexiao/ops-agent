@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/mircexiao/go-tiny-claw/internal/schema"
 	"github.com/openai/openai-go/v3"
@@ -17,11 +18,11 @@ type OpenAIProvider struct {
 }
 
 func NewOpenAIProvider(model string) *OpenAIProvider {
-	api_key := "sk-55ebd276a52a408fae7a1d2af94f24ed"
+	api_key := os.Getenv("OPENAI_API_KEY")
 	if api_key == "" {
 		panic("OPENAI_API_KEY is not set")
 	}
-	base_url := "https://api.deepseek.com/v1"
+	base_url := os.Getenv("OPENAI_URL")
 	return &OpenAIProvider{
 		client: openai.NewClient(option.WithAPIKey(api_key), option.WithBaseURL(base_url)),
 		model:  model,
