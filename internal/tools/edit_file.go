@@ -28,7 +28,7 @@ func (e *EditFileTool) Name() string {
 func (e *EditFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        e.Name(),
-		Description: "对文件进行局部字符匹配替换，这比重写整个文件更安全、更快速，请提供足够的old_text上下文，已保证唯一性",
+		Description: "对文件进行局部字符匹配替换，这比重写整个文件更安全、更快速，请提供足够的old_text上下文，以保证唯一性",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -58,9 +58,6 @@ type editFileArgs struct {
 
 func fuzzyReplace(originContent, oldText, newText string) (string, error) {
 	count := strings.Count(originContent, oldText)
-	if count == 0 {
-		return "", fmt.Errorf("未找到匹配文本")
-	}
 	if count == 1 {
 		return strings.Replace(originContent, oldText, newText, 1), nil
 	}

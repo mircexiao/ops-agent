@@ -6,3 +6,6 @@
 
 # Go 相关
 *.exe
+.env
+.workbuddy
+workSpace
