@@ -156,8 +156,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, report R
 		}
 		// 执行工具调用
 		observationMsgs := make([]schema.Message, len(response.ToolCalls))
-		var lastToolCall schema.ToolCall
-		var lastToolResult schema.ToolResult
+		type callResult struct {
+			call   schema.ToolCall
+			result schema.ToolResult
+		}
+		callResults := make([]callResult, len(response.ToolCalls))
 		var wg sync.WaitGroup
 		for i, toolCall := range response.ToolCalls {
 			wg.Add(1)
@@ -188,19 +191,21 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, report R
 					Content:    finalOutput,
 					ToolCallID: toolCall.ID,
 				}
-				observationMsgs[i] = msg
-				if idx == 0 {
-					lastToolCall = call
-					lastToolResult = result
-				}
+				observationMsgs[idx] = msg
+				callResults[idx] = callResult{call: call, result: result}
 			}(i, toolCall)
 
 		}
 		wg.Wait()
 		session.Append(observationMsgs...)
 		turnSpan.EndSpan()
-		// 判断需要介入
-		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
+		// 判断需要介入：把本轮所有工具调用按顺序喂给 injector，检测任意死循环
+		var reminderMsg *schema.Message
+		for _, cr := range callResults {
+			if m := e.injector.CheckAndInject(cr.call, cr.result); m != nil {
+				reminderMsg = m // 取最后一个触发的警告
+			}
+		}
 		if reminderMsg != nil {
 			session.Append(*reminderMsg)
 		}
@@ -246,17 +251,21 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 				defer wg.Done()
 				var r Reporter
 				if reporter != nil {
-					r = reporter.(Reporter)
-					r.OnToolCall(ctx, fmt.Sprintf("[Subagent]执行工具%s\n", call.Name), string(call.Arguments))
+					r, _ = reporter.(Reporter)
+					if r != nil {
+						r.OnToolCall(ctx, fmt.Sprintf("[Subagent]执行工具%s\n", call.Name), string(call.Arguments))
+					}
 				}
 				result := readOnlyRegistry.Execute(ctx, call)
 				finalOutput := result.Output
 
 				if result.IsError {
 					finalOutput = e.recoveryManager.AnalyzeAndInject(call.Name, result.Output)
-					r.OnToolResult(ctx, call.Name, finalOutput, result.IsError)
+					if r != nil {
+						r.OnToolResult(ctx, call.Name, finalOutput, result.IsError)
+					}
 				}
-				if reporter != nil {
+				if r != nil {
 					displayOutput := finalOutput
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "...已截断"
@@ -266,7 +275,7 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    finalOutput,
-					ToolCallID: toolCall.ID,
+					ToolCallID: call.ID,
 				}
 			}(i, toolCall)
 		}

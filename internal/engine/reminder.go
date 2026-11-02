@@ -29,7 +29,7 @@ func generateFingerPrint(toolName string, args []byte) string {
 func (r *ReminderInjector) CheckAndInject(lastToolCall schema.ToolCall, lastToolResult schema.ToolResult) *schema.Message {
 	fingerprint := generateFingerPrint(lastToolCall.Name, lastToolCall.Arguments)
 	if !lastToolResult.IsError {
-		r.consecutiveFailures = make(map[string]int)
+		delete(r.consecutiveFailures, fingerprint)
 		return nil
 	}
 	r.consecutiveFailures[fingerprint]++
